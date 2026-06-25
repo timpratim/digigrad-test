@@ -29,7 +29,9 @@ def test_business_mode_tools():
 
 def test_assistant_mode_tools():
     cfg = bridge._make_session_config(BusinessCallSpec(task="", mode="assistant"))
-    assert _tool_names(cfg) == ["remember", "recall", "web_search", "get_email_summary", "hang_up"]
+    assert _tool_names(cfg) == [
+        "remember", "recall", "web_search", "place_call", "get_email_summary", "hang_up",
+    ]
 
 
 def test_receptionist_mode_tools_no_data_access():

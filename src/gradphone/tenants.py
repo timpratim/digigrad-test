@@ -1,16 +1,13 @@
-"""Tenants + call history, backed by the dual SQLite/Postgres layer in db.py.
+"""Owner profile + call history, backed by the dual SQLite/Postgres layer in db.py.
 
-Two principals interact with the bridge:
+This deployment serves a single **owner** — the person who registered via the
+Telegram bot. Their row in ``tenants`` holds their cloned voice, phone (for
+inbound caller-ID routing), and links their call history in the ``calls``
+table. ``tenant_id`` is the owner's id, threaded through the call path so the
+right voice/memory/history is used.
 
-- **Operator** — the person running the bridge. Authenticates with
-  ``BRIDGE_API_KEY``. No quota, no rate limit. Calls placed without a
-  ``tenant_id`` are operator calls.
-- **Tenant** — a Telegram-registered user. Has a row in ``tenants``,
-  is rate-limited and quota-enforced, and every call is persisted to
-  the ``calls`` table for history lookup.
-
-Every tenant is isolated by ``tenant_id`` — this is the multi-tenant model
-(one profile per workshop participant: their voice, memory, and call history).
+(The schema keeps the ``tenants``/``tenant_id`` naming, but there is no
+multi-tenant enrollment: one deployment, one owner.)
 
 Persistence is SQLite by default (``GRADPHONE_DB``) or Postgres when
 ``DATABASE_TYPE=postgresql`` / ``DATABASE_URL`` is set — see db.py. All access
@@ -101,12 +98,6 @@ async def get_tenant_by_id(tenant_id: int) -> Optional[dict]:
     )
 
 
-async def list_tenants() -> list[dict]:
-    return await db.fetch_all(
-        f"SELECT {_TENANT_COLS} FROM tenants ORDER BY created_at ASC"
-    )
-
-
 async def record_call_start(
     room: str,
     tenant_id: Optional[int],
@@ -153,15 +144,6 @@ async def record_call_end(
 
 async def get_call(room: str) -> Optional[dict]:
     return await db.fetch_one("SELECT * FROM calls WHERE room = :room", room=room)
-
-
-async def count_calls_today(tenant_id: int) -> int:
-    today = datetime.now(timezone.utc).date().isoformat()
-    row = await db.fetch_one(
-        "SELECT COUNT(*) AS n FROM calls WHERE tenant_id = :tid AND started_at >= :today",
-        tid=tenant_id, today=today,
-    )
-    return int(row["n"]) if row else 0
 
 
 async def list_calls(tenant_id: int, limit: int = 10) -> list[dict]:

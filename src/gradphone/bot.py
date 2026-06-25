@@ -123,24 +123,15 @@ async def whoami(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Self-serve registration, optionally gated by a workshop code.
+    """One-time owner setup.
 
-    When WORKSHOP_CODE is set, `/register <code>` must match it — so only
-    attendees who were given the code can register. Unset = open self-serve.
-    New tenants get the default per-tenant daily quota (DEFAULT_DAILY_QUOTA).
-    Operators can deactivate or bump the quota via the web dashboard.
+    Access is already restricted to the owner by the gatekeeper
+    (ALLOWED_TELEGRAM_IDS), so this just creates the owner's profile row the
+    first time and is idempotent thereafter.
     """
     user = update.effective_user
     if user is None:
         return
-    required_code = os.environ.get("WORKSHOP_CODE", "").strip()
-    if required_code:
-        supplied = " ".join(context.args or []).strip()
-        if supplied != required_code:
-            await update.message.reply_text(
-                "Registration needs the workshop code: /register <code>"
-            )
-            return
     existing = await _fetch_tenant(user.id)
     if existing:
         await update.message.reply_text(
@@ -833,12 +824,10 @@ def _allowed_telegram_ids() -> set[int]:
 async def _gatekeeper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Group -1 guard that runs before every handler.
 
-    Authorization model (fails CLOSED for forks):
-      - ALLOWED_TELEGRAM_IDS set → only those user IDs may use the bot at all.
-      - Else if WORKSHOP_CODE set → open self-serve, but /register still needs
-        the code (attendee model).
-      - Else (neither set) → the bot refuses everyone, unless ALLOW_INSECURE_LOCAL=1
-        is explicitly set for local dev. This stops a freshly-forked bot from
+    Single-owner model (fails CLOSED for forks):
+      - ALLOWED_TELEGRAM_IDS set → only the owner's Telegram ID may use the bot.
+      - Else → the bot refuses everyone, unless ALLOW_INSECURE_LOCAL=1 is
+        explicitly set for local dev. This stops a freshly-forked bot from
         being open to the entire internet by default.
     """
     allowed = _allowed_telegram_ids()
@@ -848,13 +837,11 @@ async def _gatekeeper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if allowed:
         if uid in allowed:
             return
-        denied = "Not authorized. Ask the operator to add your Telegram ID."
-    elif os.environ.get("WORKSHOP_CODE", "").strip():
-        return  # self-serve; /register enforces the code
+        denied = "Not authorized. This is a personal assistant for its owner only."
     elif os.environ.get("ALLOW_INSECURE_LOCAL", "").strip().lower() in ("1", "true", "yes"):
         return
     else:
-        denied = "This bot isn't accepting users (no ALLOWED_TELEGRAM_IDS / WORKSHOP_CODE configured)."
+        denied = "This bot isn't configured yet (set ALLOWED_TELEGRAM_IDS to the owner's Telegram ID)."
 
     msg = update.effective_message
     if msg is not None:

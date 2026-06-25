@@ -36,7 +36,7 @@ from fastapi.responses import (
 )
 from fastapi.templating import Jinja2Templates
 
-from . import ratelimit, tenants, voices
+from . import tenants, voices
 from .business_agent import BusinessCallSpec
 from .sessions import (
     COOKIE_MAX_AGE,
@@ -161,8 +161,6 @@ async def dashboard_root(request: Request):
     tenant_id = role_tenant_id(role)
     operator = is_operator(role)
     viewer_name = "operator"
-    quota_used = None
-    quota_limit = None
 
     if tenant_id is not None:
         tenant = await tenants.get_tenant_by_id(tenant_id)
@@ -172,8 +170,6 @@ async def dashboard_root(request: Request):
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         viewer_name = tenant["name"]
-        quota_limit = tenant.get("custom_calls_per_day") or ratelimit.DEFAULT_DAILY_QUOTA
-        quota_used = await tenants.count_calls_today(tenant_id)
 
     return templates.TemplateResponse(
         request,
@@ -183,8 +179,8 @@ async def dashboard_root(request: Request):
             "viewer_name": viewer_name,
             "is_operator": operator,
             "tenant_id": tenant_id,
-            "quota_used": quota_used,
-            "quota_limit": quota_limit,
+            "quota_used": None,
+            "quota_limit": None,
         },
     )
 
@@ -263,11 +259,6 @@ async def ui_dial(request: Request, payload: dict) -> dict:
     if normalised_to == "+":
         return {"ok": False, "error": "destination must contain digits"}
 
-    if tenant_id is not None:
-        ok, reason = await ratelimit.reserve(tenant_id)
-        if not ok:
-            return {"ok": False, "error": reason}
-
     spec = BusinessCallSpec(
         task=payload.get("reason", ""),
         language=(payload.get("language") or "en").lower(),
@@ -277,7 +268,6 @@ async def ui_dial(request: Request, payload: dict) -> dict:
     )
     out = await dispatch_gradbot_call(to=normalised_to, spec=spec, tenant_id=tenant_id)
     if out.startswith("Error:"):
-        ratelimit.release(tenant_id)
         return {"ok": False, "error": out}
     return {"ok": True, "room": out}
 
@@ -380,41 +370,3 @@ async def ui_voice_clear(request: Request) -> dict:
     return {"ok": True, "cleared": bool(old_uid)}
 
 
-# ─── Tenant management (operator only) ────────────────
-
-@router.get("/tenants", dependencies=[fastapi.Depends(_require_operator)])
-async def ui_tenants_list() -> dict:
-    rows = await tenants.list_tenants()
-    # Annotate each tenant with today's call count.
-    out = []
-    for t in rows:
-        today = await tenants.count_calls_today(t["id"])
-        in_flight = ratelimit.in_flight_count(t["id"])
-        out.append({**t, "calls_today": today, "in_flight": in_flight,
-                    "effective_quota": t.get("custom_calls_per_day") or ratelimit.DEFAULT_DAILY_QUOTA})
-    return {"ok": True, "count": len(out), "tenants": out}
-
-
-@router.post("/tenants/{tid}/update", dependencies=[fastapi.Depends(_require_operator)])
-async def ui_tenant_update(tid: int, payload: dict) -> dict:
-    """Set is_active and/or custom_calls_per_day for a tenant."""
-    fields = []
-    params: dict = {}
-    if "is_active" in payload:
-        fields.append("is_active = :is_active")
-        params["is_active"] = 1 if payload["is_active"] else 0
-    if "custom_calls_per_day" in payload:
-        v = payload["custom_calls_per_day"]
-        if v in (None, "", 0):
-            fields.append("custom_calls_per_day = NULL")
-        else:
-            try:
-                params["ccpd"] = int(v)
-                fields.append("custom_calls_per_day = :ccpd")
-            except (TypeError, ValueError):
-                return {"ok": False, "error": "custom_calls_per_day must be an int or null"}
-    if not fields:
-        return {"ok": False, "error": "nothing to update"}
-    params["id"] = tid
-    await db.execute(f"UPDATE tenants SET {', '.join(fields)} WHERE id = :id", **params)
-    return {"ok": True}

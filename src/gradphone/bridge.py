@@ -67,11 +67,10 @@ except ImportError:
 import fastapi
 from fastapi.responses import PlainTextResponse
 
-from . import campaign as campaign_mod
 from . import email_inbox
 from . import memory as memory_mod
 from . import db as db_mod
-from . import ratelimit, tenants
+from . import tenants
 from . import websearch
 from .business_agent import (
     BusinessCallSpec,
@@ -1019,14 +1018,6 @@ async def _handle_tool_call(handle, state: _CallState, send_event) -> None:
                          "tell the caller you can't dial it right now.",
             })
             return
-        # Reserve a rate-limit slot for the NEW call, mirroring /dial. The
-        # sub-call's own websocket finally releases it when that call ends.
-        if state.tenant_id is not None:
-            ok, reason = await ratelimit.reserve(state.tenant_id)
-            if not ok:
-                _timeline_event(state, "place_call", to=to, error="rate_limited")
-                await handle.send_json({"success": False, "error": reason})
-                return
         lang = (args.get("language") or state.spec.language or "en").lower()
         sub_spec = BusinessCallSpec(
             task=task,
@@ -1038,8 +1029,6 @@ async def _handle_tool_call(handle, state: _CallState, send_event) -> None:
         )
         out = await dispatch_gradbot_call(to=to, spec=sub_spec, tenant_id=state.tenant_id)
         if isinstance(out, str) and out.startswith("Error:"):
-            if state.tenant_id is not None:
-                ratelimit.release(state.tenant_id)
             _timeline_event(state, "place_call", to=to, error=out[:120])
             await handle.send_json({
                 "success": False,
@@ -1511,10 +1500,9 @@ async def twilio_status(request: fastapi.Request):
             except OSError as e:
                 log.warning("twilio_status synthetic metrics write failed: %s", e)
         # Persist to the calls table (idempotent — only updates rows still
-        # marked 'pending'). Release the rate-limit slot if there's a
-        # tenant in the registry entry.
+        # marked 'pending').
         async with _PENDING_LOCK:
-            state_obj = _PENDING.pop(room, None) or _ACTIVE.pop(room, None)
+            _PENDING.pop(room, None) or _ACTIVE.pop(room, None)
         try:
             await tenants.record_call_end(
                 room=room,
@@ -1525,8 +1513,6 @@ async def twilio_status(request: fastapi.Request):
             )
         except Exception as e:  # noqa: BLE001
             log.warning("record_call_end failed for room=%s: %s", room, e)
-        if state_obj is not None:
-            ratelimit.release(state_obj.tenant_id)
     return {"ok": True}
 
 
@@ -1603,9 +1589,8 @@ async def dial(spec_payload: dict) -> dict:
        "business_name": "", "allow_booking": false, "tenant_id": 42}
     Response: {"room": "outbound-…"}  or  {"error": "…"}
 
-    ``tenant_id`` is optional. When present, the tenant's rate limit and
-    daily quota are enforced and the call is recorded in the ``calls``
-    table. Operator-mode (no tenant_id) calls skip both.
+    ``tenant_id`` is the owner's id. When present, the call is recorded in
+    the ``calls`` table; operator-mode (no tenant_id) calls skip history.
     """
     raw_to = spec_payload.get("to", "")
     normalised_to = "+" + "".join(ch for ch in str(raw_to) if ch.isdigit())
@@ -1625,9 +1610,6 @@ async def dial(spec_payload: dict) -> dict:
             tenant_id = int(tenant_id)
         except (TypeError, ValueError):
             return {"error": "Error: tenant_id must be an integer"}
-        ok, reason = await ratelimit.reserve(tenant_id)
-        if not ok:
-            return {"error": f"Error: {reason}", "status": 429}
 
     # /dial only places OUTBOUND calls. "receptionist" is inbound-only and is
     # set directly in _register_inbound_call, so it's intentionally not a valid
@@ -1645,7 +1627,6 @@ async def dial(spec_payload: dict) -> dict:
     )
     out = await dispatch_gradbot_call(to=normalised_to, spec=spec, tenant_id=tenant_id)
     if out.startswith("Error:"):
-        ratelimit.release(tenant_id)
         return {"error": out}
     return {"room": out}
 
@@ -1674,72 +1655,6 @@ async def register(payload: dict) -> dict:
         return {"ok": False, "error": "telegram_id (int) and name (string) required"}
     tenant_id = await tenants.register_tenant(telegram_id, name)
     return {"ok": True, "tenant_id": tenant_id}
-
-
-@app.post("/campaign", dependencies=[fastapi.Depends(_require_bearer)])
-async def campaign_start(payload: dict) -> dict:
-    """Fire a batch of outbound calls. Returns campaign_id immediately.
-
-    Request JSON:
-        {
-          "tenant_id": 42,                # optional
-          "concurrency": 3,
-          "targets": [
-            {"to": "+33…", "reason": "…", "language": "fr",
-             "business_name": "…", "label": "…", "allow_booking": false},
-            …
-          ]
-        }
-    """
-    raw_targets = payload.get("targets") or []
-    if not isinstance(raw_targets, list) or not raw_targets:
-        return {"ok": False, "error": "targets must be a non-empty list"}
-    tenant_id = payload.get("tenant_id")
-    if tenant_id is not None:
-        try:
-            tenant_id = int(tenant_id)
-        except (TypeError, ValueError):
-            return {"ok": False, "error": "tenant_id must be an integer"}
-    concurrency = int(payload.get("concurrency") or 3)
-
-    targets = []
-    for t in raw_targets:
-        if not isinstance(t, dict) or "to" not in t or "reason" not in t:
-            return {"ok": False, "error": "each target needs 'to' and 'reason'"}
-        targets.append(campaign_mod.CampaignTarget(
-            to=str(t["to"]),
-            reason=str(t["reason"]),
-            language=(t.get("language") or "en").lower(),
-            business_name=t.get("business_name") or "",
-            allow_booking=bool(t.get("allow_booking", False)),
-            label=t.get("label") or "",
-        ))
-
-    async def _dispatch(*, to: str, spec: BusinessCallSpec, tenant_id: int | None) -> str:
-        if tenant_id is not None:
-            ok, reason = await ratelimit.reserve(tenant_id)
-            if not ok:
-                return f"Error: {reason}"
-        out = await dispatch_gradbot_call(to=to, spec=spec, tenant_id=tenant_id)
-        if out.startswith("Error:"):
-            ratelimit.release(tenant_id)
-        return out
-
-    campaign_id = await campaign_mod.start_campaign(
-        targets=targets,
-        dispatch_fn=_dispatch,
-        tenant_id=tenant_id,
-        concurrency=concurrency,
-    )
-    return {"ok": True, "campaign_id": campaign_id, "total": len(targets)}
-
-
-@app.get("/campaign/{campaign_id}", dependencies=[fastapi.Depends(_require_bearer)])
-async def campaign_status(campaign_id: str) -> dict:
-    state = campaign_mod.get(campaign_id)
-    if not state:
-        return {"ok": False, "error": "campaign not found"}
-    return {"ok": True, "campaign": campaign_mod.snapshot(state)}
 
 
 async def _register_inbound_call(params: dict) -> str:
@@ -2289,7 +2204,7 @@ async def twilio_stream(websocket: fastapi.WebSocket):
         await _post_call_followups(state)
         # Persist the WS-side outcome into the calls table. Only writes if
         # the row is still 'pending', so a Twilio-side terminal status
-        # that fired first wins. Always release the rate-limit slot.
+        # that fired first wins.
         try:
             br = state.business_result or {}
             duration = max(0.0, time.time() - state.started_at)
@@ -2302,7 +2217,6 @@ async def twilio_stream(websocket: fastapi.WebSocket):
             )
         except Exception as e:  # noqa: BLE001
             log.warning("record_call_end failed for room=%s: %s", state.room_name, e)
-        ratelimit.release(state.tenant_id)
         await _safe_close(websocket)
         # Drop from the live registry so /calls/live stops listing it.
         async with _PENDING_LOCK:
@@ -2391,8 +2305,8 @@ async def dispatch_gradbot_call(
         return "Error: 'to' must contain at least one digit"
     to = "+" + digits
     # Enforce the destination allowlist at the choke point every outbound path
-    # funnels through (so /campaign and any future caller is covered too, not
-    # just /dial). Default-closed: see _outbound_destination_allowed.
+    # funnels through (so /dial and the place_call tool are both covered).
+    # Default-closed: see _outbound_destination_allowed.
     if not _outbound_destination_allowed(to):
         log.warning("dispatch refused: %s not allowed by OUTBOUND_ALLOWLIST", to)
         return "Error: destination not allowed (set OUTBOUND_ALLOWLIST or ALLOW_ARBITRARY_OUTBOUND)"
