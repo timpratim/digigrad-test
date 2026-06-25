@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>gradphone — switchboard</title>
+  <link rel="stylesheet" href="/ui/static/style.css">
+</head>
+<body data-role="{{ 'operator' if is_operator else 'tenant' }}"
+      {% if tenant_id is not none %}data-tenant-id="{{ tenant_id }}"{% endif %}>
+  <header>
+    <div class="brand">
+      <span class="dot" id="livedot"></span>
+      <span>gradphone</span>
+      <span class="viewer-tag">{{ viewer_name }}</span>
+    </div>
+    <div class="meta">
+      {% if quota_limit is not none %}
+        <span class="quota-chip" title="Today's call count vs your daily quota">
+          {{ quota_used }} / {{ quota_limit }} <span class="quota-suffix">today</span>
+        </span>
+        &nbsp;·&nbsp;
+      {% endif %}
+      <span id="bridge-status">●</span>
+      &nbsp; bridge {{ bridge_host }}
+      &nbsp;·&nbsp; <a href="/ui/logout">sign out</a>
+    </div>
+  </header>
+
+  <main>
+    <aside class="panel">
+      <h2 class="section-title">Place call</h2>
+      <form class="dial-form" id="dialform" autocomplete="off">
+        <div>
+          <label for="to">Destination · E.164</label>
+          <input id="to" name="to" type="tel" placeholder="+33144581010" required>
+        </div>
+        <div>
+          <label for="reason">Task</label>
+          <textarea id="reason" name="reason" placeholder="What should the agent ask or do on the call?" required></textarea>
+        </div>
+        <div class="row">
+          <div>
+            <label for="language">Language</label>
+            <select id="language" name="language">
+              <option value="en">English</option>
+              <option value="fr">Français</option>
+              <option value="pt">Português</option>
+            </select>
+          </div>
+          <div>
+            <label for="business_name">Business</label>
+            <input id="business_name" name="business_name" placeholder="optional">
+          </div>
+        </div>
+        <button type="submit" class="dial">DIAL</button>
+        <div class="dial-notice" id="dialnotice"></div>
+      </form>
+
+      {% if not is_operator %}
+      <div class="voice-card">
+        <h3 class="voice-title">Your voice</h3>
+        <div id="voicestatus" class="voice-status">
+          <span class="empty" style="padding:0">checking…</span>
+        </div>
+        <form class="voice-form" id="voiceform">
+          <label for="voicefile">Replace with a sample (≥20s of speech)</label>
+          <input id="voicefile" name="audio" type="file" accept="audio/*">
+          <div class="voice-actions">
+            <button type="submit" class="voice-btn">Upload + clone</button>
+            <button type="button" class="voice-btn ghost" onclick="clearVoice()">Clear</button>
+          </div>
+          <div class="voice-notice" id="voicenotice"></div>
+        </form>
+      </div>
+      {% endif %}
+    </aside>
+
+    <section class="panel right">
+      <div class="section">
+        <h2 class="section-title">
+          <span>In flight</span>
+          <span class="count" id="livecount">00</span>
+        </h2>
+        <div id="livecalls"><div class="empty">no calls in flight</div></div>
+      </div>
+
+      <div class="section">
+        <h2 class="section-title">
+          <span>{{ "Recent — all tenants" if is_operator else "Your recent calls" }}</span>
+          <span class="count" id="histcount">00</span>
+        </h2>
+        <div id="history"><div class="empty">no calls yet — try one</div></div>
+      </div>
+
+      {% if is_operator %}
+      <div class="section">
+        <h2 class="section-title">
+          <span>Tenants</span>
+          <span class="count" id="tenantcount">00</span>
+        </h2>
+        <div id="tenants"><div class="empty">no registered tenants yet</div></div>
+      </div>
+      {% endif %}
+    </section>
+  </main>
+
+  <div class="modal-backdrop" id="modalbackdrop" onclick="if (event.target === this) closeModal()">
+    <div class="modal">
+      <h3 id="modalTitle">Call result</h3>
+      <div class="subtle" id="modalSubtitle">room</div>
+      <dl id="modalBody"></dl>
+      <button class="close" onclick="closeModal()">Close</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="/ui/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>gradphone — access</title>
+  <link rel="stylesheet" href="/ui/static/style.css">
+</head>
+<body>
+  <div class="login-shell">
+    <div class="login-card">
+      <h1>gradphone</h1>
+      <p>operator's switchboard</p>
+      {% if error %}<div class="login-error">{{ error }}</div>{% endif %}
+      <form method="post" action="/ui/login">
+        <input name="token" type="password" placeholder="BRIDGE_API_KEY" autofocus>
+        <button type="submit">Enter</button>
+      </form>
+      <p class="login-hint">
+        Paste the <code>BRIDGE_API_KEY</code> value from your <code>.env</code>.
+      </p>
+    </div>
+  </div>
+</body>
+</html>
