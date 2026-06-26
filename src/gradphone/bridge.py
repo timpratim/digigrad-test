@@ -251,7 +251,9 @@ def _web_search_tool_def() -> Any:
             "knowledge — today's news, weather, recent events, prices, sports scores, "
             "anything time-sensitive or freshly changed. Returns a short sourced answer. "
             "Use it whenever the caller asks something you're not confident is current; "
-            "do NOT guess at recent facts. Takes a second or two."
+            "do NOT guess at recent facts. It takes a second or two to come back, so say "
+            "ONE short, natural filler that fits the question first (e.g. 'let me look that "
+            "up') — then call it, so the line isn't silent while it runs."
         ),
         parameters_json=json.dumps({
             "type": "object",
@@ -342,7 +344,9 @@ def _find_business_tool_def() -> Any:
             "'find a cafe near my hotel and call the best one'. Returns a ranked list "
             "of candidates (name, rating, address, phone in E.164), best first. Pick the "
             "top-rated one that has a phone and pass that phone straight to place_call. "
-            "Do NOT use web_search to find phone numbers — its numbers are unreliable."
+            "Do NOT use web_search to find phone numbers — its numbers are unreliable. "
+            "It runs a live lookup and takes a few seconds, so say ONE short filler that "
+            "fits the request first (e.g. 'let me find that for you') — then call it."
         ),
         parameters_json=json.dumps({
             "type": "object",
@@ -691,6 +695,14 @@ def _make_session_config(
         stt_extra_config=json.dumps(
             {"padding_bonus": _env_float("GRADBOT_STT_PADDING_BONUS", 1.5)}
         ),
+        # Disable model "reasoning". gpt-5.x on OpenRouter defaults to reasoning
+        # effort = medium when the request omits a `reasoning` field, which adds
+        # slow hidden think-turns before every reply — bad for a realtime voice
+        # agent (latency) and it bills extra output tokens. gradbot forwards
+        # llm_extra_config into the chat-completions body, so this becomes
+        # OpenRouter's top-level `reasoning` param. Use effort=minimal as the
+        # GPT-5 floor if a model rejects enabled=false.
+        llm_extra_config=json.dumps({"reasoning": {"enabled": False}}),
         # First-turn behaviour: assistant speaks first so we play the
         # courtesy opener before the callee says anything. The prompt's
         # turn-1 rules tell the LLM to lead with the brief courteous
