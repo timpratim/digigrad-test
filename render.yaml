@@ -14,12 +14,12 @@ previews:
   generation: off
 
 projects:
-  - name: digigrad
+  - name: timpratim-digigrad
     environments:
       - name: production
         services:
           - type: web
-            name: gradphone
+            name: timpratim-gradphone
             runtime: docker
             dockerfilePath: ./Dockerfile
             plan: starter # always-on. Do NOT use free — it sleeps and drops calls/WebSockets.
@@ -27,7 +27,7 @@ projects:
             numInstances: 1 # single stateful instance — in-memory call state; never scale >1.
             healthCheckPath: /healthz
             disk:
-              name: gradphone-data
+              name: timpratim-gradphone-data
               mountPath: /data # SQLite DB + call recordings live here (persist across deploys).
               sizeGB: 1
             envVars:
